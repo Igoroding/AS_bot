@@ -121,7 +121,10 @@ async def handle_text(message: Message):
     # Семантический фильтр: LLM отбирает только те ниши, которые соответствуют смыслу запроса
     niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
     filtered = await filter_niches_by_semantic(text, niches_dicts)
-    if filtered:
+    # filtered может быть: None (LLM недоступен) → пропускаем фильтр
+    #                       [] (LLM ничего не нашёл) → результат пустой
+    #                     [...] (найдены ниши) → фильтруем
+    if filtered is not None:
         filtered_queries = {f["query"] for f in filtered}
         result_niches = [n for n in result_niches if n.query in filtered_queries]
 

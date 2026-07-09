@@ -70,7 +70,7 @@ async def filter_niches_by_semantic(user_text: str, niches_data: list[dict]) -> 
     Каждая ниша: {"query": str, "requests": int, "products": int, "competition": float}
     """
     if not LLM_API_KEY or not niches_data:
-        return niches_data
+        return None  # LLM недоступен — пропускаем фильтр
 
     queries_text = "\n".join(f"{i+1}. {n['query']}" for i, n in enumerate(niches_data[:100]))
     prompt = (
@@ -91,13 +91,13 @@ async def filter_niches_by_semantic(user_text: str, niches_data: list[dict]) -> 
 
     try:
         if not content.strip():
-            return niches_data  # пустой ответ LLM — возвращаем без фильтрации
+            return None  # пустой ответ LLM — пропускаем фильтр
         nums = [int(x.strip()) for x in content.split(",") if x.strip().isdigit()]
         if 0 in nums:
             return []
         return [niches_data[i - 1] for i in nums if 1 <= i <= len(niches_data)]
     except Exception:
-        return niches_data  # при ошибке — возвращаем без фильтрации
+        return None  # при ошибке — пропускаем фильтр
 
 
 async def filter_niches_by_text(user_text: str, niches_data: list[dict]) -> list[dict]:
