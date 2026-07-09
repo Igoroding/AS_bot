@@ -10,7 +10,7 @@ from filters.niche_loader import (
     load_niches, get_categories, filter_by_category,
     filter_by_keywords, format_niche, wb_search_url, Niche,
 )
-from llm import match_categories, filter_niches_by_text
+from llm import match_categories, filter_niches_by_text, filter_niches_by_semantic
 
 router = Router()
 
@@ -116,6 +116,17 @@ async def handle_text(message: Message):
 
     if not result_niches:
         await message.answer("🔍 Ничего не найдено. Попробуй другой запрос.")
+        return
+
+    # Семантический фильтр: LLM отбирает только те ниши, которые соответствуют смыслу запроса
+    niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
+    filtered = await filter_niches_by_semantic(text, niches_dicts)
+    if filtered:
+        filtered_queries = {f["query"] for f in filtered}
+        result_niches = [n for n in result_niches if n.query in filtered_queries]
+
+    if not result_niches:
+        await message.answer("🔍 По смыслу запроса ничего не найдено. Попробуй уточнить.")
         return
 
     # Сохраняем состояние юзера
