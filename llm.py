@@ -47,7 +47,7 @@ async def match_categories(user_text: str, available_categories: list[str]) -> l
     content = await _llm_call(
         "Ты — помощник для подбора категорий товаров на Wildberries. Отвечай кратко, только названия категорий.",
         prompt,
-        max_tokens=800,
+        max_tokens=1000,
     )
 
     # Парсим ответ — каждая строка = категория
@@ -85,7 +85,7 @@ async def filter_niches_by_semantic(user_text: str, niches_data: list[dict]) -> 
     content = await _llm_call(
         "Ты — семантический фильтр поисковых запросов на Wildberries. Отвечай только номерами через запятую.",
         prompt,
-        max_tokens=300,
+        max_tokens=600,
         temperature=0.1,
     )
 

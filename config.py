@@ -7,7 +7,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8736323533:AAFLEASGua8GgJfqVkjR8ksG6hnuFtTg9
 # LLM через Polza.ai (агрегатор, OpenAI-совместимый API)
 LLM_API_KEY = os.getenv("LLM_API_KEY", "pza_BziHZ-oEJPKj0Cuc9-4tqs_Qykwp6Veg")
 LLM_BASE_URL = "https://api.polza.ai/v1"
-LLM_MODEL = "z-ai/glm-4.7-flash"  # дешёвая flash-модель, ~0.0005 ₽/запрос
+LLM_MODEL = "deepseek/deepseek-v4-flash"  # дешёвая fast-модель, ~0.006 ₽/запрос, с reasoning
 
 # Лимиты
 DAILY_USER_LIMIT = 100
