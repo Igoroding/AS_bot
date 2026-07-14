@@ -11,6 +11,7 @@ from filters.niche_loader import (
     filter_by_keywords, format_niche, wb_search_url, Niche,
 )
 from llm import match_categories, filter_niches_by_text, filter_niches_by_semantic
+from voice import transcribe_audio
 
 router = Router()
 
@@ -63,15 +64,52 @@ async def cmd_help(message: Message):
     log_action(message.from_user.id, "help")
 
 
-@router.message()
-async def handle_text(message: Message):
+@router.message(F.voice)
+async def handle_voice(message: Message):
+    """Обрабатывает голосовые сообщения: распознаёт речь и передаёт в handle_text."""
     user_id = message.from_user.id
-    text = message.text.strip()
 
     # Проверка лимита
     if not check_and_increment_usage(user_id, DAILY_USER_LIMIT):
         await message.answer("⚠️ Дневной лимит запросов исчерпан. Возвращайся завтра!")
         return
+
+    # Скачиваем голосовое сообщение
+    await message.answer("🎤 Распознаю голосовое сообщение...")
+    try:
+        file = await message.bot.get_file(message.voice.file_id)
+        audio_data = await message.bot.download_file(file.file_path)
+        audio_bytes = audio_data.read()
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to download voice: {e}")
+        await message.answer("❌ Не удалось скачать голосовое сообщение.")
+        return
+
+    # Отправляем в Whisper
+    transcribed = await transcribe_audio(audio_bytes, "voice.ogg")
+    if not transcribed:
+        await message.answer("❌ Не удалось распознать речь. Попробуй записать чётче или напиши текстом.")
+        return
+
+    log_action(user_id, "voice_transcribed", transcribed)
+    await message.answer(f"🎙 Распознал: «{transcribed}»\n🔍 Ищу ниши...")
+
+    # Подменяем текст сообщения и передаём в handle_text
+    message.text = transcribed
+    await handle_text(message, _voice_mode=True)
+
+
+@router.message()
+async def handle_text(message: Message, _voice_mode: bool = False):
+    user_id = message.from_user.id
+    text = message.text.strip()
+
+    # Проверка лимита (пропускаем если уже проверили в handle_voice)
+    if not _voice_mode:
+        if not check_and_increment_usage(user_id, DAILY_USER_LIMIT):
+            await message.answer("⚠️ Дневной лимит запросов исчерпан. Возвращайся завтра!")
+            return
 
     log_action(user_id, "query", text)
 
