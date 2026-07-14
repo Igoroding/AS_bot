@@ -46,6 +46,7 @@ async def cmd_start(message: Message):
         "👋 Привет! Я бот для поиска свободных ниш на Wildberries.\n\n"
         "Опиши, что ты ищешь или производишь — например:\n"
         "«шью женскую одежду»\n«продаю семена»\n«делаю украшения»\n\n"
+        "Можно и голосовым! 🎙\n\n"
         "Я подберу категории WB и покажу ниши с низкой конкуренцией."
     )
     log_action(message.from_user.id, "start")
@@ -55,9 +56,9 @@ async def cmd_start(message: Message):
 async def cmd_help(message: Message):
     await message.answer(
         "📝 Как пользоваться:\n\n"
-        "1. Опиши, что ты ищешь — свободным текстом\n"
+        "1. Опиши, что ты ищешь — текстом или голосовым 🎙\n"
         "2. Бот подберёт категории WB и покажет ниши\n"
-        "3. Уточни, если нужно — «не большие размеры», «только лёгкие»\n"
+        "3. Уточни, если нужно — «не большие размеры», «без цветов»\n"
         "4. Нажми на ссылку, чтобы перейти на WB\n\n"
         f"Лимит: {DAILY_USER_LIMIT} запросов в день."
     )
@@ -137,6 +138,7 @@ async def handle_text(message: Message, _voice_mode: bool = False):
         return
 
     # Новый поиск: мэтчинг категорий
+    await message.answer("⏳ Подбираю категории на WB...")
     all_categories = get_categories(niches)
     matched = await match_categories(text, all_categories)
     log_action(user_id, "categories_matched", ", ".join(matched))
@@ -157,6 +159,7 @@ async def handle_text(message: Message, _voice_mode: bool = False):
         return
 
     # Семантический фильтр: LLM отбирает только те ниши, которые соответствуют смыслу запроса
+    await message.answer("⏳ Фильтрую по смыслу запроса...")
     niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
     filtered = await filter_niches_by_semantic(text, niches_dicts)
     # filtered может быть: None (LLM недоступен) → пропускаем фильтр
@@ -224,5 +227,6 @@ async def handle_pagination(callback: CallbackQuery):
 
 def _looks_like_refinement(text: str) -> bool:
     """Эвристика: текст похож на уточнение, а не на новый поиск."""
-    refinement_markers = ["не ", "без ", "только ", "исключи", "убери", "кроме", "но не"]
+    # «только» убрано — «найди только овощи» это новый поиск, не уточнение
+    refinement_markers = ["не ", "без ", "исключи", "убери", "кроме", "но не"]
     return any(text.lower().startswith(m) or f" {m}" in text.lower() for m in refinement_markers)

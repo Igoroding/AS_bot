@@ -19,7 +19,7 @@ async def _llm_call(system_prompt: str, user_prompt: str, max_tokens: int = 800,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(f"{LLM_BASE_URL}/chat/completions", headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -134,7 +134,7 @@ async def filter_niches_by_text(user_text: str, niches_data: list[dict]) -> list
         "max_tokens": 200,
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(f"{LLM_BASE_URL}/chat/completions", headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
