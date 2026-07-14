@@ -96,15 +96,18 @@ async def handle_voice(message: Message):
     log_action(user_id, "voice_transcribed", transcribed)
     await message.answer(f"🎙 Распознал: «{transcribed}»\n🔍 Ищу ниши...")
 
-    # Подменяем текст сообщения и передаём в handle_text
-    message.text = transcribed
-    await handle_text(message, _voice_mode=True)
+    # Передаём распознанный текст напрямую в логику поиска
+    await _process_query(message, user_id, transcribed, _voice_mode=True)
 
 
 @router.message()
 async def handle_text(message: Message, _voice_mode: bool = False):
     user_id = message.from_user.id
     text = message.text.strip()
+    await _process_query(message, user_id, text, _voice_mode=_voice_mode)
+
+
+async def _process_query(message: Message, user_id: int, text: str, _voice_mode: bool = False):
 
     # Проверка лимита (пропускаем если уже проверили в handle_voice)
     if not _voice_mode:
