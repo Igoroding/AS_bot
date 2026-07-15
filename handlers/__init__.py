@@ -81,10 +81,16 @@ async def handle_voice(message: Message):
         file = await message.bot.get_file(message.voice.file_id)
         audio_data = await message.bot.download_file(file.file_path)
         audio_bytes = audio_data.read()
+        import logging
+        logging.info(f"Voice file size: {len(audio_bytes)} bytes, file_path: {file.file_path}")
     except Exception as e:
         import logging
-        logging.error(f"Failed to download voice: {e}")
-        await message.answer("❌ Не удалось скачать голосовое сообщение.")
+        error_msg = str(e)
+        logging.error(f"Failed to download voice: {error_msg}")
+        if "too large" in error_msg.lower() or "20 MB" in error_msg:
+            await message.answer("❌ Файл слишком большой (лимит 20 МБ). Запиши короче — до 30 секунд.")
+        else:
+            await message.answer(f"❌ Не удалось скачать голосовое: {error_msg[:100]}")
         return
 
     # Отправляем в Whisper
