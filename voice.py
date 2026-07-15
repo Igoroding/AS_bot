@@ -2,7 +2,6 @@
 import httpx
 from config import LLM_API_KEY
 
-# Whisper endpoint (обрати внимание: /api/v1/, не /v1/)
 WHISPER_URL = "https://api.polza.ai/api/v1/audio/transcriptions"
 WHISPER_MODEL = "openai/whisper-1"
 
@@ -11,14 +10,18 @@ async def transcribe_audio(audio_data: bytes, filename: str = "voice.ogg") -> st
     """
     Принимает аудио (байты) и отправляет в Polza.ai Whisper.
     Возвращает распознанный текст или None при ошибке.
+    Фильтрует галлюцинации Whisper на неречевом аудио.
     """
     if not LLM_API_KEY:
+        return None
+
+    # Ранняя проверка: пустой или слишком маленький файл
+    if not audio_data or len(audio_data) < 100:
         return None
 
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
     }
-
     files = {
         "file": (filename, audio_data, "audio/ogg"),
     }
@@ -33,7 +36,24 @@ async def transcribe_audio(audio_data: bytes, filename: str = "voice.ogg") -> st
             resp = await client.post(WHISPER_URL, headers=headers, files=files, data=data)
             resp.raise_for_status()
             result = resp.json()
-            return result.get("text", "").strip()
+            text = result.get("text", "").strip()
+            
+            # Фильтрация галлюцинаций Whisper:
+            # - слишком короткий текст (< 2 символов)
+            # - только ASCII (эмодзи, латиница — для русскоязычного бота подозрительно)
+            # - только цифры/спецсимволы
+            if not text or len(text) < 2:
+                return None
+            
+            # Проверяем: есть ли кириллица или хотя бы осмысленные слова
+            has_cyrillic = any('\u0400' <= c <= '\u04ff' for c in text)
+            has_latin_words = any(w.isalpha() and len(w) >= 3 for w in text.split())
+            
+            if not has_cyrillic and not has_latin_words:
+                # Только эмодзи/цифры/спецсимволы — галлюцинация
+                return None
+            
+            return text
     except Exception as e:
         import logging
         logging.error(f"Whisper transcription error: {e}")
