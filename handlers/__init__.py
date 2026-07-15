@@ -47,8 +47,15 @@ def _query_sqlite(params: dict) -> list[Niche]:
     if not os.path.exists(DB_PATH):
         return []
     
-    where_parts = ["competition <= 5", "request_count >= 500"]
+    where_parts = ["request_count >= 500"]
     args = []
+    
+    # Базовый фильтр: конкуренция ≤5% (по умолчанию, если не указано иное)
+    max_comp = 5.0
+    if params.get("max_competition") is not None:
+        max_comp = float(params["max_competition"])
+    where_parts.append("competition <= ?")
+    args.append(max_comp)
     
     if params.get("max_products") is not None:
         where_parts.append("cards_count <= ?")
@@ -57,10 +64,6 @@ def _query_sqlite(params: dict) -> list[Niche]:
     if params.get("min_requests") is not None:
         where_parts.append("request_count >= ?")
         args.append(int(params["min_requests"]))
-    
-    if params.get("max_competition") is not None:
-        where_parts.append("competition <= ?")
-        args.append(float(params["max_competition"]))
     
     if params.get("categories"):
         placeholders = ",".join("?" * len(params["categories"]))
