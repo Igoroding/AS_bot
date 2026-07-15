@@ -338,5 +338,8 @@ async def handle_pagination(callback: CallbackQuery):
 
 def _looks_like_refinement(text: str) -> bool:
     """Эвристика: текст похож на уточнение, а не на новый поиск."""
+    # Длинные тексты (>80 символов) — почти всегда новый поиск, не уточнение
+    if len(text) > 80:
+        return False
     refinement_markers = ["не ", "без ", "исключи", "убери", "кроме", "но не"]
     return any(text.lower().startswith(m) or f" {m}" in text.lower() for m in refinement_markers)
