@@ -47,7 +47,7 @@ def _query_sqlite(params: dict) -> list[Niche]:
     if not os.path.exists(DB_PATH):
         return []
     
-    where_parts = ["request_count >= 500"]
+    where_parts = ["request_count >= 500", "cards_count > 0"]
     args = []
     
     # Базовый фильтр: конкуренция ≤5% (по умолчанию, если не указано иное)
