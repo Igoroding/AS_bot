@@ -47,7 +47,7 @@ def _query_sqlite(params: dict) -> list[Niche]:
     if not os.path.exists(DB_PATH):
         return []
     
-    where_parts = ["competition <= 500", "request_count >= 500"]
+    where_parts = ["competition <= 5", "request_count >= 500"]
     args = []
     
     if params.get("max_products") is not None:
