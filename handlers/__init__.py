@@ -172,11 +172,15 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
     niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
     filtered = await filter_niches_by_semantic(text, niches_dicts)
     # filtered может быть: None (LLM недоступен) → пропускаем фильтр
-    #                       [] (LLM ничего не нашёл) → результат пустой
+    #                       [] (LLM ничего не нашёл) → fallback на топ ниш
     #                     [...] (найдены ниши) → фильтруем
-    if filtered is not None:
+    if filtered is not None and len(filtered) > 0:
         filtered_queries = {f["query"] for f in filtered}
         result_niches = [n for n in result_niches if n.query in filtered_queries]
+    elif filtered == [] and len(result_niches) > 10:
+        # LLM отфильтровал всё, но ниш было много — запрос слишком общий
+        # Показываем топ-20 без фильтра, отсортированные по запросам
+        result_niches = sorted(result_niches, key=lambda n: n.requests, reverse=True)[:20]
 
     if not result_niches:
         await message.answer("🔍 По смыслу запроса ничего не найдено. Попробуй уточнить.")
