@@ -22,7 +22,7 @@ _niches_cache: list[Niche] = []
 _niches_by_category: dict[str, list[Niche]] = {}
 _user_state: dict[int, dict] = {}  # user_id → {niches: [...], offset: int}
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "data", "wb_trends.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "wb_trends.db")
 
 
 def get_niches() -> list[Niche]:

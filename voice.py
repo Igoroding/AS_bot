@@ -42,7 +42,19 @@ async def transcribe_audio(audio_data: bytes, filename: str = "voice.ogg") -> st
             # - слишком короткий текст (< 2 символов)
             # - только ASCII (эмодзи, латиница — для русскоязычного бота подозрительно)
             # - только цифры/спецсимволы
+            # - типичные галлюцинации Whisper на неречевом аудио (blacklist фраз)
             if not text or len(text) < 2:
+                return None
+            
+            # Blacklist типичных галлюцинаций Whisper
+            hallucination_phrases = [
+                "редактор субтитров", "синецкая", "егорова", "корректор",
+                "спасибо за внимание", "подписывайтесь на канал",
+                "вы смотрели", "оставайтесь с нами", "до новых встреч",
+                "субтитры добавил", "переводчик", "озвучка",
+            ]
+            text_lower = text.lower()
+            if any(phrase in text_lower for phrase in hallucination_phrases):
                 return None
             
             # Проверяем: есть ли кириллица или хотя бы осмысленные слова
