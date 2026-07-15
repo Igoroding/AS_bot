@@ -227,8 +227,12 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
             await message.answer("🔍 По заданным фильтрам ничего не найдено. Попробуй смягчить условия.")
             return
         
-        # Если есть поисковый текст — применяем семантический фильтр
-        if search_text and search_text.strip():
+        # Если есть поисковый текст и он конкретный — применяем семантический фильтр
+        # Абстрактные тексты («хорошие ниши», «все категории») — пропускаем фильтр
+        abstract_markers = ["хорош", "все ниш", "все катег", "свободн", "любые", "любая", "найти ниш", "куда зайти"]
+        is_abstract = any(m in search_text.lower() for m in abstract_markers) or len(search_text.strip()) < 3
+        
+        if search_text and search_text.strip() and not is_abstract:
             await message.answer("⏳ Фильтрую по смыслу...")
             niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
             filtered = await filter_niches_by_semantic(search_text, niches_dicts)
