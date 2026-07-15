@@ -35,7 +35,7 @@ def load_niches(filepath: str = None) -> list[Niche]:
     c = conn.cursor()
     c.execute(
         "SELECT phrase, request_count, cards_count, competition "
-        "FROM niches WHERE competition <= 5 AND request_count >= 500 "
+        "FROM niches WHERE competition <= 500 AND request_count >= 500 "
         "ORDER BY request_count DESC"
     )
     niches = []
@@ -75,7 +75,7 @@ def filter_by_category(niches: list[Niche], category: str) -> list[Niche]:
     c = conn.cursor()
     c.execute(
         "SELECT phrase, request_count, cards_count, competition "
-        "FROM niches WHERE category = ? AND competition <= 5 AND request_count >= 500 "
+        "FROM niches WHERE category = ? AND competition <= 500 AND request_count >= 500 "
         "ORDER BY request_count DESC",
         (category,)
     )
@@ -99,7 +99,7 @@ def filter_by_keywords(niches: list[Niche], keywords: list[str]) -> list[Niche]:
 
 def format_niche(n: Niche) -> str:
     """Форматирует нишу для вывода."""
-    comp = f"{n.competition:.1f}" if n.competition < 100 else "∞"
+    comp = f"{n.competition:.1f}%" if n.competition < 100 else "∞"
     return f"📋 {n.query} · 📊 {n.requests:,} запросов · 📦 {n.products:,} товаров · 🎯 конкуренция {comp}"
 
 
