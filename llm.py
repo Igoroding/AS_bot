@@ -31,15 +31,75 @@ def _is_valid_query(text: str) -> bool:
     text = text.strip()
     if len(text) < 2:
         return False
-    # Если только цифры/спецсимволы — пропускаем
     letters = [c for c in text if c.isalpha()]
     if len(letters) < 2:
         return False
-    # Если все буквы уникальные и их мало — бессмысленный набор
     unique = set(text.lower().replace(" ", ""))
     if len(unique) <= 2 and len(text) > 3:
         return False
     return True
+
+
+async def parse_query_params(user_text: str) -> dict | None:
+    """
+    Извлекает параметры фильтрации из естественного языка.
+    Возвращает dict с ключами:
+      search_text: str — что искать (без параметров)
+      categories: list[str] — названия категорий если указаны
+      max_products: int | None
+      min_requests: int | None
+      max_competition: float | None
+      sort_by: str — "requests" | "competition" | "products" (default: "requests")
+    Или None если LLM недоступен.
+    """
+    if not LLM_API_KEY or not _is_valid_query(user_text):
+        return None
+
+    prompt = f"""Проанализируй запрос пользователя для поиска ниш на Wildberries:
+«{user_text}»
+
+Извлеки параметры фильтрации и верни ТОЛЬКО JSON (без markdown, без пояснений):
+{{
+  "search_text": "что искать — без числовых параметров и условий",
+  "categories": ["названия категорий если пользователь указал конкретные"],
+  "max_products": null или число,
+  "min_requests": null или число,
+  "max_competition": null или число,
+  "sort_by": "requests"
+}}
+
+Правила:
+- max_products: «не более N карточек», «до N товаров», «максимум N товаров» → N
+- min_requests: «от N запросов», «более N запросов», «запросов больше N» → N
+- max_competition: «конкуренция до N», «конкуренция не выше N», «конкуренция меньше N» → N
+- sort_by: «по запросам»→"requests", «по конкуренции»→"competition", «по товарам»→"products"
+- search_text: поисковый запрос БЕЗ параметров (например «компостер садовый» из «найди компостер садовый не более 100 карточек»)
+- Если параметр не указан — null
+- categories: пустой список если не указаны"""
+
+    try:
+        content = await _llm_call(
+            "Ты — парсер параметров поиска для Wildberries. Отвечай только валидным JSON.",
+            prompt,
+            max_tokens=300,
+            temperature=0.0,
+        )
+        # Убираем markdown если LLM добавил
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content
+            content = content.rsplit("```", 1)[0]
+        content = content.strip()
+        
+        params = json.loads(content)
+        # Валидация
+        if not isinstance(params, dict):
+            return None
+        return params
+    except Exception as e:
+        import logging
+        logging.error(f"parse_query_params error: {e}")
+        return None
 
 
 async def match_categories(user_text: str, available_categories: list[str]) -> list[str]:
@@ -47,12 +107,10 @@ async def match_categories(user_text: str, available_categories: list[str]) -> l
     Принимает свободный текст юзера и список категорий WB.
     Возвращает список подходящих категорий (макс. 5).
     """
-    # Валидация: пустой или бессмысленный запрос
     if not _is_valid_query(user_text):
         return []
 
     if not LLM_API_KEY:
-        # Fallback: простой substring-поиск
         text_lower = user_text.lower()
         return [c for c in available_categories if any(w in c.lower() for w in text_lower.split())][:5]
 
@@ -71,33 +129,24 @@ async def match_categories(user_text: str, available_categories: list[str]) -> l
             max_tokens=200,
         )
     except Exception:
-        # Fallback: substring-поиск при ошибке LLM
         import logging
         logging.error("match_categories: LLM error, falling back to substring")
         text_lower = user_text.lower()
         return [c for c in available_categories if any(w in c.lower() for w in text_lower.split())][:5]
 
-    # Парсим ответ — каждая строка = категория
     result = [line.strip() for line in content.split("\n") if line.strip()]
-    # Фильтруем только существующие категории (возвращаем ТОЛЬКО существующие — никаких галлюцинаций)
     cats_lower = {c.lower(): c for c in available_categories}
     matched = []
     for r in result:
         if r.lower() in cats_lower:
             matched.append(cats_lower[r.lower()])
-    # Возвращаем только точно совпавшие категории — никаких сырых LLM-ответов
     return matched[:5]
 
 
 async def filter_niches_by_semantic(user_text: str, niches_data: list[dict]) -> list[dict] | None:
     """
-    Семантический фильтр: LLM получает поисковые запросы и текст юзера,
-    отбирает только те, которые ТОЧНО соответствуют смыслу запроса.
-
-    Возвращает:
-      None  — LLM недоступен (пропускаем фильтр)
-      []    — LLM ничего не нашёл
-      [...] — найденные ниши
+    Семантический фильтр: LLM отбирает ниши по смыслу запроса.
+    Возвращает None (пропустить), [] (ничего), [...] (найдено).
     """
     if not LLM_API_KEY or not niches_data:
         return None
@@ -122,7 +171,7 @@ async def filter_niches_by_semantic(user_text: str, niches_data: list[dict]) -> 
     except Exception:
         import logging
         logging.error("filter_niches_by_semantic: LLM error, skipping filter")
-        return None  # при ошибке — пропускаем фильтр
+        return None
 
     try:
         if not content.strip():
@@ -137,8 +186,7 @@ async def filter_niches_by_semantic(user_text: str, niches_data: list[dict]) -> 
 
 async def filter_niches_by_text(user_text: str, niches_data: list[dict]) -> list[dict]:
     """
-    Принимает уточняющий текст юзера (например «не большие размеры»)
-    и список ниш. Возвращает отфильтрованный список.
+    Уточняющий фильтр для последующего запроса (например «не большие размеры»).
     """
     if not LLM_API_KEY or not niches_data:
         return niches_data
@@ -164,4 +212,4 @@ async def filter_niches_by_text(user_text: str, niches_data: list[dict]) -> list
     except Exception:
         import logging
         logging.error("filter_niches_by_text: LLM error, returning unfiltered")
-        return niches_data  # при ошибке — возвращаем без фильтрации
+        return niches_data
