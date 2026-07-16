@@ -276,10 +276,7 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
     # Обычный поиск: мэтчинг категорий
     # Если search_text пустой или абстрактный — возвращаем все ниши из БД
     abstract_markers = ["хорош", "все ниш", "все катег", "свободн", "любые", "любая", "найти ниш", "куда зайти",
-                        "садоводств", "огород", "одежд", "обувь", "спорт", "кухн", "ремонт", "мебел",
-                        "косметик", "игрушк", "электроник", "инструмент", "авто", "зоотовар",
-                        "строительств", "сантехник", "посуда", "текстиль", "декор", "подарк",
-                        "рыбалк", "рыболов", "туризм", "поход", "кемпинг", "охота"]
+                        "покажи все", "покажи ниш", "что есть", "что можно"]
     is_abstract = not search_text or not search_text.strip() or any(m in search_text.lower() for m in abstract_markers) or len(search_text.strip()) < 3
 
     if is_abstract and os.path.exists(DB_PATH):
