@@ -35,7 +35,7 @@ def load_niches(filepath: str = None) -> list[Niche]:
     c = conn.cursor()
     c.execute(
         "SELECT phrase, request_count, cards_count, competition "
-        "FROM niches WHERE competition <= 5 AND request_count >= 500 AND cards_count > 0 "
+        "FROM niches WHERE competition <= 15 AND request_count >= 500 AND cards_count > 0 "
         "ORDER BY request_count DESC"
     )
     niches = []
@@ -75,7 +75,7 @@ def filter_by_category(niches: list[Niche], category: str) -> list[Niche]:
     c = conn.cursor()
     c.execute(
         "SELECT phrase, request_count, cards_count, competition "
-        "FROM niches WHERE category = ? AND competition <= 5 AND request_count >= 500 AND cards_count > 0 "
+        "FROM niches WHERE category = ? AND competition <= 15 AND request_count >= 500 AND cards_count > 0 "
         "ORDER BY request_count DESC",
         (category,)
     )

@@ -12,7 +12,7 @@ from filters.niche_loader import (
     load_niches, get_categories, filter_by_category,
     filter_by_keywords, format_niche, wb_search_url, Niche,
 )
-from llm import match_categories, filter_niches_by_text, filter_niches_by_semantic, parse_query_params
+from llm import match_categories, filter_niches_by_text, filter_niches_by_semantic, parse_query_params, group_niches_into_products, analyze_product
 from voice import transcribe_audio
 
 router = Router()
@@ -50,8 +50,8 @@ def _query_sqlite(params: dict) -> list[Niche]:
     where_parts = ["request_count >= 500", "cards_count > 0"]
     args = []
     
-    # Базовый фильтр: конкуренция ≤5% (по умолчанию, если не указано иное)
-    max_comp = 5.0
+    # Базовый фильтр: конкуренция ≤15% (по умолчанию, если не указано иное)
+    max_comp = 15.0
     if params.get("max_competition") is not None:
         max_comp = float(params["max_competition"])
     where_parts.append("competition <= ?")
@@ -122,11 +122,21 @@ async def cmd_help(message: Message):
         "   · «от 5000 запросов»\n"
         "   · «конкуренция до 2»\n"
         "   · «сортировка по конкуренции»\n"
-        "3. Уточни, если нужно — «не большие», «без цветов»\n"
-        "4. Нажми на ссылку, чтобы перейти на WB\n\n"
-        f"Лимит: {DAILY_USER_LIMIT} запросов в день."
+        "3. Уточни результат — «не пластиковые», «без брендов»\n"
+        "4. /new — сбросить и начать новый поиск\n\n"
+        f"Лимит: {DAILY_USER_LIMIT} запросов в день.\n\n"
+        "💡 Каждый новый запрос (не уточнение) ищет по всей базе заново."
     )
     log_action(message.from_user.id, "help")
+
+
+@router.message(Command("new"))
+async def cmd_new(message: Message):
+    """Сбрасывает состояние и начинает новый поиск."""
+    user_id = message.from_user.id
+    _user_state.pop(user_id, None)
+    await message.answer("✅ Готов к новому поиску! Напиши, что ищешь.")
+    log_action(user_id, "new_search")
 
 
 @router.message(F.voice)
@@ -202,7 +212,7 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
 
         state["niches"] = filtered_niches
         state["offset"] = 0
-        await _send_niches(message, filtered_niches, 0, user_id)
+        await _send_products(message, filtered_niches, 0, user_id)
         return
 
     # Парсим параметры из запроса (новый функционал)
@@ -227,36 +237,58 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
         result_niches = _query_sqlite(params)
         
         if not result_niches:
-            await message.answer("🔍 По заданным фильтрам ничего не найдено. Попробуй смягчить условия.")
+            # Fallback: если SQL не дал результатов (например категория не точная),
+            # пробуем обычный поиск через match_categories
+            if params.get("categories"):
+                search_text = params["categories"][0]  # используем название категории как поисковый запрос
+                has_params = False  # отключаем SQL, идём в обычный поиск
+            else:
+                await message.answer("🔍 По заданным фильтрам ничего не найдено. Попробуй смягчить условия.")
+                return
+        else:
+            # Если есть поисковый текст и он конкретный — применяем семантический фильтр
+            # Абстрактные тексты («хорошие ниши», «все категории») — пропускаем фильтр
+            abstract_markers = ["хорош", "все ниш", "все катег", "свободн", "любые", "любая", "найти ниш", "куда зайти",
+                               "садоводств", "огород", "одежд", "обувь", "спорт", "кухн", "ремонт", "мебел",
+                               "косметик", "игрушк", "электроник", "инструмент", "авто", "зоотовар",
+                               "строительств", "сантехник", "посуда", "текстиль", "декор", "подарк",
+                               "рыбалк", "рыболов", "туризм", "поход", "кемпинг", "охота"]
+            is_abstract = any(m in search_text.lower() for m in abstract_markers) or len(search_text.strip()) < 3
+            
+            if search_text and search_text.strip() and not is_abstract:
+                await message.answer("⏳ Фильтрую по смыслу...")
+                niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
+                filtered = await filter_niches_by_semantic(search_text, niches_dicts)
+                if filtered is not None and len(filtered) > 0:
+                    filtered_queries = {f["query"] for f in filtered}
+                    result_niches = [n for n in result_niches if n.query in filtered_queries]
+                elif filtered == [] and len(result_niches) > 10:
+                    result_niches = sorted(result_niches, key=lambda n: n.requests, reverse=True)[:20]
+            
+            if not result_niches:
+                await message.answer("🔍 По смыслу запроса ничего не найдено. Попробуй уточнить.")
+                return
+            
+            _user_state[user_id] = {"niches": result_niches, "offset": 0}
+            await _send_products(message, result_niches, 0, user_id)
             return
-        
-        # Если есть поисковый текст и он конкретный — применяем семантический фильтр
-        # Абстрактные тексты («хорошие ниши», «все категории») — пропускаем фильтр
-        abstract_markers = ["хорош", "все ниш", "все катег", "свободн", "любые", "любая", "найти ниш", "куда зайти"]
-        is_abstract = any(m in search_text.lower() for m in abstract_markers) or len(search_text.strip()) < 3
-        
-        if search_text and search_text.strip() and not is_abstract:
-            await message.answer("⏳ Фильтрую по смыслу...")
-            niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
-            filtered = await filter_niches_by_semantic(search_text, niches_dicts)
-            if filtered is not None and len(filtered) > 0:
-                filtered_queries = {f["query"] for f in filtered}
-                result_niches = [n for n in result_niches if n.query in filtered_queries]
-            elif filtered == [] and len(result_niches) > 10:
-                result_niches = sorted(result_niches, key=lambda n: n.requests, reverse=True)[:20]
-        
-        if not result_niches:
-            await message.answer("🔍 По смыслу запроса ничего не найдено. Попробуй уточнить.")
-            return
-        
-        _user_state[user_id] = {"niches": result_niches, "offset": 0}
-        await _send_niches(message, result_niches, 0, user_id)
-        return
 
     # Обычный поиск: мэтчинг категорий
     await message.answer("⏳ Подбираю категории на WB...")
     all_categories = get_categories(niches)
     matched = await match_categories(search_text, all_categories)
+    
+    # Fallback: если LLM не нашёл категории, делаем substring-поиск по названиям категорий
+    if not matched:
+        text_lower = search_text.lower()
+        words = text_lower.split()
+        # Ищем по префиксам слов: «садоводство» → «садов» матчит «садовые»
+        prefixes = set()
+        for w in words:
+            for n in range(3, len(w) + 1):
+                prefixes.add(w[:n])
+        matched = [c for c in all_categories if any(p in c.lower() for p in prefixes)][:10]
+    
     log_action(user_id, "categories_matched", ", ".join(matched))
 
     # Собираем ниши из выбранных категорий
@@ -289,11 +321,85 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
         return
 
     _user_state[user_id] = {"niches": result_niches, "offset": 0}
-    await _send_niches(message, result_niches, 0, user_id)
+    await _send_products(message, result_niches, 0, user_id)
+
+
+async def _send_products(message: Message, niches: list[Niche], offset: int, user_id: int):
+    """Группирует ниши в товары, анализирует и выводит по 3 штуки."""
+    # Конвертируем Niche → dict для LLM
+    niches_dicts = [
+        {"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition}
+        for n in niches[:50]
+    ]
+
+    # Группируем в товары
+    await message.answer("⏳ Группирую фразы в товары...")
+    products = await group_niches_into_products(niches_dicts)
+
+    if not products:
+        # Fallback: каждая фраза = отдельный товар
+        products = [
+            {"product_name": n.query, "phrases": [nd]}
+            for n, nd in zip(niches[:15], niches_dicts[:15])
+        ]
+
+    total_products = len(products)
+    batch = products[offset:offset + 3]
+    if not batch:
+        await message.answer("Больше нет товаров по этому запросу.")
+        return
+
+    text_parts = [f"🎯 Найдено товаров: {total_products}\n"]
+
+    for i, product in enumerate(batch, offset + 1):
+        name = product["product_name"]
+        phrases = product["phrases"]
+
+        # Суммарный спрос
+        total_requests = sum(p["requests"] for p in phrases)
+        avg_competition = sum(p["competition"] for p in phrases) / len(phrases) if phrases else 0
+
+        text_parts.append(f"## {i}. {name}")
+        text_parts.append(f"📊 Суммарный спрос: {total_requests:,} запросов/мес · 🎯 Конкуренция: {avg_competition:.1f}%")
+
+        # Ключевые фразы для рекламы (топ-5 с низкой конкуренцией)
+        low_comp_phrases = sorted(phrases, key=lambda p: p["competition"])[:5]
+        if low_comp_phrases:
+            text_parts.append("🔑 *Ключевые фразы для рекламы:*")
+            for p in low_comp_phrases:
+                text_parts.append(f"  · {p['query']} — {p['requests']:,} запросов, конкуренция {p['competition']:.1f}%")
+
+        # Аналитика
+        text_parts.append("")
+        analysis = await analyze_product(name, phrases)
+        if analysis:
+            text_parts.append(analysis)
+        else:
+            text_parts.append("⚠️ Аналитика временно недоступна")
+
+        # Ссылка на WB
+        text_parts.append(f"🔗 [Поиск на WB](https://www.wildberries.ru/catalog/0/search.aspx?query={quote(name)})")
+        text_parts.append("")
+
+    text = "\n".join(text_parts)
+
+    # Кнопки пагинации
+    keyboard = []
+    row = []
+    if offset > 0:
+        row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"prod_{offset-3}"))
+    if offset + 3 < total_products:
+        row.append(InlineKeyboardButton(text="Далее ➡️", callback_data=f"prod_{offset+3}"))
+    if row:
+        keyboard.append(row)
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
+
+    await message.answer(text, reply_markup=markup, parse_mode="Markdown")
+    log_action(user_id, "products_shown", f"offset={offset}, count={len(batch)}")
 
 
 async def _send_niches(message: Message, niches: list[Niche], offset: int, user_id: int):
-    """Отправляет 10 ниш начиная с offset, с кнопкой «Далее»."""
+    """Отправляет 10 ниш начиная с offset, с кнопкой «Далее» (старый формат)."""
     batch = niches[offset:offset + 10]
     if not batch:
         await message.answer("Больше нет ниш по этому запросу.")
@@ -337,6 +443,24 @@ async def handle_pagination(callback: CallbackQuery):
     await _send_niches(callback.message, niches, offset, user_id)
     await callback.answer()
     log_action(user_id, "pagination", f"offset={offset}")
+
+
+@router.callback_query(F.data.startswith("prod_"))
+async def handle_product_pagination(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    offset = int(callback.data.split("_")[1])
+    state = _user_state.get(user_id)
+
+    if not state:
+        await callback.answer("Сессия истекла. Сделай новый запрос.")
+        return
+
+    niches = state["niches"]
+    state["offset"] = offset
+
+    await _send_products(callback.message, niches, offset, user_id)
+    await callback.answer()
+    log_action(user_id, "product_pagination", f"offset={offset}")
 
 
 def _looks_like_refinement(text: str) -> bool:

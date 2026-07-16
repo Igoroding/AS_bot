@@ -73,7 +73,7 @@ async def parse_query_params(user_text: str) -> dict | None:
 - min_requests: «от N запросов», «более N запросов», «запросов больше N», «хороший спрос хотя бы N», «спрос от N», «от N» (если N большое, явно спрос) → N
 - max_competition: «конкуренция до N», «конкуренция не выше N», «конкуренция меньше N», «не очень большая конкуренция» → 5
 - sort_by: «по запросам»→"requests", «по конкуренции»→"competition", «по товарам»→"products". ЕСЛИ пользователь явно сказал «сортировка по X» — обязательно верни X, не игнорируй.
-- search_text: конкретный товар или категория БЕЗ параметров. Если пользователь НЕ указал конкретный товар (например «найди хорошие ниши», «покажи все ниши») — верни пустую строку ""
+- search_text: КОНКРЕТНЫЙ товар или продукт. Если пользователь написал общую тему/категорию (например «садоводство», «одежда», «спорт», «кухня», «ремонт») — верни ПУСТУЮ СТРОКУ "". Только конкретные товары («компостер», «укроп», «платья») оставляй в search_text.
 - Если параметр не указан — null
 - categories: пустой список если не указаны"""
 
@@ -89,6 +89,9 @@ async def parse_query_params(user_text: str) -> dict | None:
         if content.startswith("```"):
             content = content.split("\n", 1)[1] if "\n" in content else content
             content = content.rsplit("```", 1)[0]
+        # GPT-4o может вернуть ```json ... ```
+        if "```json" in content:
+            content = content.split("```json", 1)[1].split("```", 1)[0]
         content = content.strip()
         
         params = json.loads(content)
@@ -182,6 +185,117 @@ async def filter_niches_by_semantic(user_text: str, niches_data: list[dict]) -> 
         return [niches_data[i - 1] for i in nums if 1 <= i <= len(niches_data)]
     except Exception:
         return None
+
+
+async def group_niches_into_products(niches_data: list[dict]) -> list[dict]:
+    """
+    Группирует ключевые фразы в товары через LLM.
+    Возвращает список товаров, каждый с полями:
+      product_name: str — название товара
+      phrases: list[dict] — ключевые фразы этого товара
+    """
+    if not LLM_API_KEY or not niches_data:
+        return []
+
+    phrases_text = "\n".join(
+        f"{i+1}. {n['query']} (запросов: {n['requests']}, товаров: {n['products']}, конкуренция: {n['competition']:.2f}%)"
+        for i, n in enumerate(niches_data[:50])
+    )
+
+    prompt = (
+        f"Сгруппируй эти поисковые фразы Wildberries в товары. Один товар может объединять несколько похожих фраз.\n\n"
+        f"{phrases_text}\n\n"
+        f"Верни ТОЛЬКО JSON-массив (без markdown, без пояснений):\n"
+        f'[{{"product_name": "Название товара", "phrase_indices": [1, 3, 5]}}, ...]\n\n'
+        f"Правила:\n"
+        f"- phrase_indices — номера фраз из списка выше, которые относятся к этому товару\n"
+        f"- Каждая фраза должна быть ровно в одном товаре\n"
+        f"- АГРЕССИВНО объединяй похожие фразы в один товар. «Компостер садовый», «компостер для дачи», «компостер пластиковый», «ящик для компоста» — это ОДИН товар\n"
+        f"- «Спиннинг ультралайт» и «спиннинг для джига» — ОДИН товар. «Катушка для спиннинга» и «катушка безынерционная» — ОДИН товар\n"
+        f"- Название товара — КОНКРЕТНОЕ, КОММЕРЧЕСКОЕ, БЕЗ ВЫДУМАННЫХ БРЕНДОВ. Не «ProCast», не «Трофейный Удар». Просто «Безынерционная катушка для спиннинга» или «Спиннинг ультралайт»\n"
+        f"- ЕСЛИ все фразы содержат название одного бренда (zarina, love republic, befree, lalis и т.д.) — НЕ делай из них отдельный товар. Это брендовые запросы, не свободная ниша\n"
+        f"- Максимум 5 товаров, сортируй по суммарному спросу (самые востребованные — первыми)"
+    )
+
+    try:
+        content = await _llm_call(
+            "Ты — аналитик Wildberries. Группируешь поисковые фразы в товары. Отвечай только валидным JSON.",
+            prompt,
+            max_tokens=600,
+            temperature=0.2,
+        )
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content
+            content = content.rsplit("```", 1)[0]
+        if "```json" in content:
+            content = content.split("```json", 1)[1].split("```", 1)[0]
+        content = content.strip()
+        if not content.startswith("["):
+            import re
+            match = re.search(r'\[.*\]', content, re.DOTALL)
+            if match:
+                content = match.group(0)
+
+        import json
+        groups = json.loads(content)
+        if not isinstance(groups, list):
+            return []
+
+        result = []
+        for g in groups:
+            indices = g.get("phrase_indices", [])
+            phrases = [niches_data[i - 1] for i in indices if 1 <= i <= len(niches_data)]
+            if phrases:
+                result.append({
+                    "product_name": g.get("product_name", "Товар"),
+                    "phrases": phrases,
+                })
+        return result
+    except Exception:
+        import logging
+        logging.error("group_niches_into_products: LLM error")
+        return []
+
+
+async def analyze_product(product_name: str, phrases: list[dict]) -> str:
+    """
+    Анализирует товар: размер/вес, удобство для маркетплейсов, Честный знак,
+    сертификаты, бренды в запросах.
+    Возвращает форматированный текст аналитики.
+    """
+    if not LLM_API_KEY:
+        return ""
+
+    phrases_text = "\n".join(
+        f"- {p['query']} ({p['requests']:,} запросов/мес)"
+        for p in phrases[:10]
+    )
+
+    prompt = (
+        f"Товар: «{product_name}»\n"
+        f"Ключевые фразы (рынки):\n{phrases_text}\n\n"
+        f"Дай короткую аналитику для продавца на Wildberries. Ответь строго по пунктам, каждый с новой строки:\n\n"
+        f"📦 Размер и вес: (примерная оценка — маленький/средний/крупный, лёгкий/тяжёлый, насколько удобно хранить и возить)\n"
+        f"🚚 Удобство для маркетплейсов: (логистика — бьётся ли, занимает ли много места на складе, высокий ли риск возвратов)\n"
+        f"🏷 Честный знак: нужен или нет (да/нет, кратко почему)\n"
+        f"📜 Сертификаты: нужны или нет (да/нет, какие именно если да)\n"
+        f"™ Бренды в запросах: есть ли брендовые запросы среди фраз (да/нет, какие бренды если есть, риск блокировки)\n\n"
+        f"Пиши коротко, по делу. Без вступления и заключения. Только эти 5 пунктов."
+    )
+
+    try:
+        content = await _llm_call(
+            "Ты — эксперт по товарам для Wildberries. Отвечай коротко, строго по пунктам.",
+            prompt,
+            max_tokens=1000,
+            temperature=0.3,
+        )
+        return content.strip()
+    except Exception:
+        import logging
+        logging.error("analyze_product: LLM error")
+        return ""
 
 
 async def filter_niches_by_text(user_text: str, niches_data: list[dict]) -> list[dict]:
