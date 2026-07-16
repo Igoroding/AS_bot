@@ -108,21 +108,52 @@ async def parse_query_params(user_text: str) -> dict | None:
 async def match_categories(user_text: str, available_categories: list[str]) -> list[str]:
     """
     Принимает свободный текст юзера и список категорий WB.
+    Сначала substring-поиск по ключевым словам, потом LLM для уточнения.
     Возвращает список подходящих категорий (макс. 5).
     """
     if not _is_valid_query(user_text):
         return []
 
-    if not LLM_API_KEY:
-        text_lower = user_text.lower()
-        return [c for c in available_categories if any(w in c.lower() for w in text_lower.split())][:5]
+    # Шаг 1: substring-поиск по словам из запроса
+    text_lower = user_text.lower()
+    words = [w for w in text_lower.split() if len(w) > 2]
 
-    cats_text = "\n".join(available_categories)
+    # Строим префиксы для каждого слова (от 3 букв до полного слова)
+    prefixes = set()
+    for w in words:
+        for n in range(3, len(w) + 1):
+            prefixes.add(w[:n])
+
+    # Ищем категории, содержащие любое из слов или префиксов
+    candidate_cats = []
+    for c in available_categories:
+        c_lower = c.lower()
+        if any(w in c_lower for w in words) or any(p in c_lower for p in prefixes):
+            candidate_cats.append(c)
+
+    # Если нашли мало — расширяем поиск по отдельным буквам слов
+    if len(candidate_cats) < 3:
+        for c in available_categories:
+            c_lower = c.lower()
+            if any(w[0] in c_lower for w in words if w):
+                candidate_cats.append(c)
+
+    candidate_cats = list(dict.fromkeys(candidate_cats))  # уникальные, сохраняя порядок
+
+    # Шаг 2: если кандидатов мало — возвращаем сразу
+    if len(candidate_cats) <= 5:
+        return candidate_cats[:5]
+
+    # Шаг 3: если кандидатов много — LLM уточняет
+    if not LLM_API_KEY:
+        return candidate_cats[:5]
+
+    cats_text = "\n".join(candidate_cats[:30])  # передаём только топ-30 кандидатов
     prompt = (
         f"Пользователь ищет ниши на Wildberries. Его запрос: «{user_text}».\n"
-        f"Доступные категории WB:\n{cats_text}\n\n"
-        f"Выбери до 5 наиболее подходящих категорий. Верни только названия категорий, "
-        f"каждую с новой строки, без нумерации и пояснений. Если ничего не подходит — верни пустоту."
+        f"Вот подходящие категории (выбери до 5 самых релевантных):\n{cats_text}\n\n"
+        f"Верни только названия категорий, каждую с новой строки, без нумерации и пояснений. "
+        f"Если ничего не подходит — верни пустоту."
     )
 
     try:
@@ -133,9 +164,8 @@ async def match_categories(user_text: str, available_categories: list[str]) -> l
         )
     except Exception:
         import logging
-        logging.error("match_categories: LLM error, falling back to substring")
-        text_lower = user_text.lower()
-        return [c for c in available_categories if any(w in c.lower() for w in text_lower.split())][:5]
+        logging.error("match_categories: LLM error, returning substring candidates")
+        return candidate_cats[:5]
 
     result = [line.strip() for line in content.split("\n") if line.strip()]
     cats_lower = {c.lower(): c for c in available_categories}
@@ -143,7 +173,7 @@ async def match_categories(user_text: str, available_categories: list[str]) -> l
     for r in result:
         if r.lower() in cats_lower:
             matched.append(cats_lower[r.lower()])
-    return matched[:5]
+    return matched[:5] or candidate_cats[:5]
 
 
 async def filter_niches_by_semantic(user_text: str, niches_data: list[dict]) -> list[dict] | None:

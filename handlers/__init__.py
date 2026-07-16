@@ -295,18 +295,7 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
     await message.answer("⏳ Подбираю категории на WB...")
     all_categories = get_categories(niches)
     matched = await match_categories(search_text, all_categories)
-    
-    # Fallback: если LLM не нашёл категории, делаем substring-поиск по названиям категорий
-    if not matched:
-        text_lower = search_text.lower()
-        words = text_lower.split()
-        # Ищем по префиксам слов: «садоводство» → «садов» матчит «садовые»
-        prefixes = set()
-        for w in words:
-            for n in range(3, len(w) + 1):
-                prefixes.add(w[:n])
-        matched = [c for c in all_categories if any(p in c.lower() for p in prefixes)][:10]
-    
+
     log_action(user_id, "categories_matched", ", ".join(matched))
 
     # Собираем ниши из выбранных категорий
