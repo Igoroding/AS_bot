@@ -343,53 +343,45 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
 
 
 async def _send_products(message: Message, niches: list[Niche], offset: int, user_id: int):
-    """Группирует ниши в товары, анализирует и выводит по 3 штуки."""
-    # Конвертируем Niche → dict для LLM
-    niches_dicts = [
-        {"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition}
-        for n in niches[:50]
-    ]
-
-    # Группируем в товары
-    await message.answer("⏳ Группирую фразы в товары...")
-    products = await group_niches_into_products(niches_dicts)
-
-    if not products:
-        # Fallback: каждая фраза = отдельный товар
-        products = [
-            {"product_name": n.query, "phrases": [nd]}
-            for n, nd in zip(niches[:15], niches_dicts[:15])
-        ]
-
-    total_products = len(products)
-    batch = products[offset:offset + 3]
-    if not batch:
-        await message.answer("Больше нет товаров по этому запросу.")
+    """Группирует ниши по категориям, анализирует и выводит по 3 штуки."""
+    # Группируем по категориям через SQL
+    if not niches:
+        await message.answer("Больше нет ниш по этому запросу.")
         return
 
-    text_parts = [f"🎯 Найдено товаров: {total_products}\n"]
+    # Получаем категории с агрегированными данными
+    categories = _get_category_groups(niches)
+    if not categories:
+        await message.answer("Не удалось сгруппировать по категориям.")
+        return
 
-    for i, product in enumerate(batch, offset + 1):
-        name = product["product_name"]
-        phrases = product["phrases"]
+    total_categories = len(categories)
+    batch = categories[offset:offset + 3]
+    if not batch:
+        await message.answer("Больше нет категорий по этому запросу.")
+        return
 
-        # Суммарный спрос
-        total_requests = sum(p["requests"] for p in phrases)
-        avg_competition = sum(p["competition"] for p in phrases) / len(phrases) if phrases else 0
+    text_parts = [f"🎯 Найдено категорий: {total_categories}\n"]
+
+    for i, cat in enumerate(batch, offset + 1):
+        name = cat["category"]
+        total_requests = cat["total_requests"]
+        phrase_count = cat["phrase_count"]
+        avg_competition = cat["avg_competition"]
+        top_phrases = cat["top_phrases"]
 
         text_parts.append(f"## {i}. {name}")
-        text_parts.append(f"📊 Суммарный спрос: {total_requests:,} запросов/мес · 🎯 Конкуренция: {avg_competition:.1f}%")
+        text_parts.append(f"📊 **{total_requests:,}** запросов/мес · **{phrase_count}** фраз · 🎯 конкуренция **{avg_competition:.1f}%**")
 
-        # Ключевые фразы для рекламы (топ-5 с низкой конкуренцией)
-        low_comp_phrases = sorted(phrases, key=lambda p: p["competition"])[:5]
-        if low_comp_phrases:
-            text_parts.append("🔑 *Ключевые фразы для рекламы:*")
-            for p in low_comp_phrases:
+        # Топ-5 фраз с низкой конкуренцией
+        if top_phrases:
+            text_parts.append("🔑 *Лучшие фразы:*")
+            for p in top_phrases:
                 text_parts.append(f"  · {p['query']} — {p['requests']:,} запросов, конкуренция {p['competition']:.1f}%")
 
-        # Аналитика
+        # Аналитика категории
         text_parts.append("")
-        analysis = await analyze_product(name, phrases)
+        analysis = await analyze_product(name, top_phrases[:5])
         if analysis:
             text_parts.append(analysis)
         else:
@@ -406,7 +398,7 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
     row = []
     if offset > 0:
         row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"prod_{offset-3}"))
-    if offset + 3 < total_products:
+    if offset + 3 < total_categories:
         row.append(InlineKeyboardButton(text="Далее ➡️", callback_data=f"prod_{offset+3}"))
     if row:
         keyboard.append(row)
@@ -414,6 +406,66 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
 
     await message.answer(text, reply_markup=markup, parse_mode="Markdown")
     log_action(user_id, "products_shown", f"offset={offset}, count={len(batch)}")
+
+
+def _get_category_groups(niches: list[Niche]) -> list[dict]:
+    """Группирует ниши по категориям через SQL, возвращает агрегированные данные."""
+    if not niches or not os.path.exists(DB_PATH):
+        return []
+
+    # Извлекаем фразы из ниш для поиска по БД
+    phrases = [n.query for n in niches[:200]]
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    # Строим WHERE по фразам
+    placeholders = ",".join("?" * len(phrases))
+    sql = f"""
+        SELECT category,
+               SUM(request_count) as total_requests,
+               COUNT(*) as phrase_count,
+               AVG(competition) as avg_competition
+        FROM niches
+        WHERE phrase IN ({placeholders})
+          AND competition <= 15
+          AND request_count >= 500
+          AND cards_count > 0
+          AND category IS NOT NULL
+          AND category != ''
+        GROUP BY category
+        ORDER BY total_requests DESC
+        LIMIT 50
+    """
+    c.execute(sql, phrases)
+    rows = c.fetchall()
+
+    result = []
+    for row in rows:
+        category = row["category"]
+        # Получаем топ-5 фраз для этой категории
+        c.execute(
+            "SELECT phrase, request_count, cards_count, competition "
+            "FROM niches WHERE category = ? AND competition <= 15 AND request_count >= 500 AND cards_count > 0 "
+            "ORDER BY request_count DESC LIMIT 5",
+            (category,),
+        )
+        top_phrases = [
+            {"query": r["phrase"], "requests": r["request_count"], "products": r["cards_count"], "competition": r["competition"]}
+            for r in c.fetchall()
+        ]
+
+        result.append({
+            "category": category,
+            "total_requests": row["total_requests"],
+            "phrase_count": row["phrase_count"],
+            "avg_competition": row["avg_competition"],
+            "top_phrases": top_phrases,
+        })
+
+    conn.close()
+    return result
 
 
 async def _send_niches(message: Message, niches: list[Niche], offset: int, user_id: int):
