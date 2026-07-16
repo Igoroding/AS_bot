@@ -274,6 +274,24 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
             return
 
     # Обычный поиск: мэтчинг категорий
+    # Если search_text пустой или абстрактный — возвращаем все ниши из БД
+    abstract_markers = ["хорош", "все ниш", "все катег", "свободн", "любые", "любая", "найти ниш", "куда зайти",
+                        "садоводств", "огород", "одежд", "обувь", "спорт", "кухн", "ремонт", "мебел",
+                        "косметик", "игрушк", "электроник", "инструмент", "авто", "зоотовар",
+                        "строительств", "сантехник", "посуда", "текстиль", "декор", "подарк",
+                        "рыбалк", "рыболов", "туризм", "поход", "кемпинг", "охота"]
+    is_abstract = not search_text or not search_text.strip() or any(m in search_text.lower() for m in abstract_markers) or len(search_text.strip()) < 3
+
+    if is_abstract and os.path.exists(DB_PATH):
+        await message.answer("⏳ Ищу все свободные ниши...")
+        result_niches = _query_sqlite({"max_competition": 15.0})
+        if not result_niches:
+            await message.answer("🔍 Свободных ниш не найдено. Попробуй смягчить условия.")
+            return
+        _user_state[user_id] = {"niches": result_niches, "offset": 0}
+        await _send_products(message, result_niches, 0, user_id)
+        return
+
     await message.answer("⏳ Подбираю категории на WB...")
     all_categories = get_categories(niches)
     matched = await match_categories(search_text, all_categories)
