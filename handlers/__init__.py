@@ -8,11 +8,8 @@ import os
 
 from config import DAILY_USER_LIMIT
 from database import log_action, check_and_increment_usage, init_db
-from filters.niche_loader import (
-    load_niches, get_categories, filter_by_category,
-    filter_by_keywords, format_niche, wb_search_url, Niche,
-)
-from llm import match_categories, filter_niches_by_text, filter_niches_by_semantic, parse_query_params, group_niches_into_products, analyze_product
+from filters.niche_loader import Niche, format_niche, wb_search_url
+from llm import parse_query_params, filter_niches_by_text, analyze_product
 from voice import transcribe_audio
 
 router = Router()
@@ -43,40 +40,48 @@ def get_niches_by_category() -> dict[str, list[Niche]]:
 
 
 def _query_sqlite(params: dict) -> list[Niche]:
-    """Прямой SQL-запрос к БД с фильтрами по параметрам."""
+    """Единый SQL-запрос: числовые фильтры + LIKE по search_text."""
     if not os.path.exists(DB_PATH):
         return []
-    
+
     where_parts = ["request_count >= 500", "cards_count > 0"]
     args = []
-    
-    # Базовый фильтр: конкуренция ≤15% (по умолчанию, если не указано иное)
+
+    # Конкуренция (по умолчанию 15%)
     max_comp = 15.0
     if params.get("max_competition") is not None:
         max_comp = float(params["max_competition"])
     where_parts.append("competition <= ?")
     args.append(max_comp)
-    
+
     if params.get("max_products") is not None:
         where_parts.append("cards_count <= ?")
         args.append(int(params["max_products"]))
-    
+
     if params.get("min_requests") is not None:
         where_parts.append("request_count >= ?")
         args.append(int(params["min_requests"]))
-    
-    if params.get("categories"):
-        placeholders = ",".join("?" * len(params["categories"]))
-        where_parts.append(f"category IN ({placeholders})")
-        args.extend(params["categories"])
-    
+
+    # search_text — LIKE по category ИЛИ phrase
+    search_text = params.get("search_text", "")
+    if search_text and search_text.strip():
+        words = [w.strip() for w in search_text.lower().split() if len(w.strip()) > 2]
+        if words:
+            like_clauses = " OR ".join(
+                f"(LOWER(category) LIKE ? OR LOWER(phrase) LIKE ?)"
+                for _ in words
+            )
+            where_parts.append(f"({like_clauses})")
+            for w in words:
+                args.extend([f"%{w}%", f"%{w}%"])
+
     sort_by = params.get("sort_by", "requests")
     sort_map = {"requests": "request_count", "competition": "competition", "products": "cards_count"}
     sort_col = sort_map.get(sort_by, "request_count")
-    
+
     where = " AND ".join(where_parts)
     sql = f"SELECT phrase, request_count, cards_count, competition FROM niches WHERE {where} ORDER BY {sort_col} DESC LIMIT 200"
-    
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -193,12 +198,6 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
 
     log_action(user_id, "query", text)
 
-    # Загружаем ниши
-    niches = get_niches()
-    if not niches:
-        await message.answer("❌ Данные не загружены. Проверьте файл.")
-        return
-
     # Если у юзера есть сохранённые ниши и текст похож на уточнение
     state = _user_state.get(user_id)
     if state and _looks_like_refinement(text):
@@ -215,113 +214,28 @@ async def _process_query(message: Message, user_id: int, text: str, _voice_mode:
         await _send_products(message, filtered_niches, 0, user_id)
         return
 
-    # Парсим параметры из запроса (новый функционал)
+    # Парсим параметры из запроса
     await message.answer("⏳ Анализирую запрос...")
     params = await parse_query_params(text)
-    
+
     search_text = text
-    has_params = False
-    
     if params:
         search_text = params.get("search_text", text) or text
-        has_params = any(params.get(k) is not None for k in ["max_products", "min_requests", "max_competition"])
-        if params.get("categories"):
-            has_params = True
-        
-        if has_params:
-            log_action(user_id, "params", str(params))
-    
-    # Если есть числовые параметры — делаем прямой SQL-запрос
-    if has_params and os.path.exists(DB_PATH):
-        await message.answer("⏳ Ищу в базе с фильтрами...")
-        result_niches = _query_sqlite(params)
-        
-        if not result_niches:
-            # Fallback: если SQL не дал результатов (например категория не точная),
-            # пробуем обычный поиск через match_categories
-            if params.get("categories"):
-                search_text = params["categories"][0]  # используем название категории как поисковый запрос
-                has_params = False  # отключаем SQL, идём в обычный поиск
-            else:
-                await message.answer("🔍 По заданным фильтрам ничего не найдено. Попробуй смягчить условия.")
-                return
-        else:
-            # Если есть поисковый текст и он конкретный — применяем семантический фильтр
-            # Абстрактные тексты («хорошие ниши», «все категории») — пропускаем фильтр
-            abstract_markers = ["хорош", "все ниш", "все катег", "свободн", "любые", "любая", "найти ниш", "куда зайти",
-                               "садоводств", "огород", "одежд", "обувь", "спорт", "кухн", "ремонт", "мебел",
-                               "косметик", "игрушк", "электроник", "инструмент", "авто", "зоотовар",
-                               "строительств", "сантехник", "посуда", "текстиль", "декор", "подарк",
-                               "рыбалк", "рыболов", "туризм", "поход", "кемпинг", "охота"]
-            is_abstract = any(m in search_text.lower() for m in abstract_markers) or len(search_text.strip()) < 3
-            
-            if search_text and search_text.strip() and not is_abstract:
-                await message.answer("⏳ Фильтрую по смыслу...")
-                niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
-                filtered = await filter_niches_by_semantic(search_text, niches_dicts)
-                if filtered is not None and len(filtered) > 0:
-                    filtered_queries = {f["query"] for f in filtered}
-                    result_niches = [n for n in result_niches if n.query in filtered_queries]
-                elif filtered == [] and len(result_niches) > 10:
-                    result_niches = sorted(result_niches, key=lambda n: n.requests, reverse=True)[:20]
-            
-            if not result_niches:
-                await message.answer("🔍 По смыслу запроса ничего не найдено. Попробуй уточнить.")
-                return
-            
-            _user_state[user_id] = {"niches": result_niches, "offset": 0}
-            await _send_products(message, result_niches, 0, user_id)
-            return
+        log_action(user_id, "params", str(params))
 
-    # Обычный поиск: мэтчинг категорий
-    # Если search_text пустой или абстрактный — возвращаем все ниши из БД
-    abstract_markers = ["хорош", "все ниш", "все катег", "свободн", "любые", "любая", "найти ниш", "куда зайти",
-                        "покажи все", "покажи ниш", "что есть", "что можно"]
-    is_abstract = not search_text or not search_text.strip() or any(m in search_text.lower() for m in abstract_markers) or len(search_text.strip()) < 3
-
-    if is_abstract and os.path.exists(DB_PATH):
-        await message.answer("⏳ Ищу все свободные ниши...")
-        result_niches = _query_sqlite({"max_competition": 15.0})
-        if not result_niches:
-            await message.answer("🔍 Свободных ниш не найдено. Попробуй смягчить условия.")
-            return
-        _user_state[user_id] = {"niches": result_niches, "offset": 0}
-        await _send_products(message, result_niches, 0, user_id)
-        return
-
-    await message.answer("⏳ Подбираю категории на WB...")
-    all_categories = get_categories(niches)
-    matched = await match_categories(search_text, all_categories)
-
-    log_action(user_id, "categories_matched", ", ".join(matched))
-
-    # Собираем ниши из выбранных категорий
-    niches_by_cat = get_niches_by_category()
-    result_niches = []
-    for cat in matched:
-        result_niches.extend(niches_by_cat.get(cat, []))
-
-    # Если ничего не найдено — пробуем substring-поиск по запросам
-    if not result_niches:
-        text_lower = search_text.lower()
-        result_niches = [n for n in niches if any(w in n.query.lower() for w in text_lower.split())]
+    # Единый SQL-запрос: числовые фильтры + LIKE по search_text
+    await message.answer("⏳ Ищу в базе...")
+    query_params = {
+        "search_text": search_text,
+        "max_competition": params.get("max_competition") if params else None,
+        "min_requests": params.get("min_requests") if params else None,
+        "max_products": params.get("max_products") if params else None,
+        "sort_by": params.get("sort_by") if params else None,
+    }
+    result_niches = _query_sqlite(query_params)
 
     if not result_niches:
-        await message.answer("🔍 Ничего не найдено. Попробуй другой запрос.")
-        return
-
-    # Семантический фильтр
-    await message.answer("⏳ Фильтрую по смыслу запроса...")
-    niches_dicts = [{"query": n.query, "requests": n.requests, "products": n.products, "competition": n.competition} for n in result_niches[:100]]
-    filtered = await filter_niches_by_semantic(search_text, niches_dicts)
-    if filtered is not None and len(filtered) > 0:
-        filtered_queries = {f["query"] for f in filtered}
-        result_niches = [n for n in result_niches if n.query in filtered_queries]
-    elif filtered == [] and len(result_niches) > 10:
-        result_niches = sorted(result_niches, key=lambda n: n.requests, reverse=True)[:20]
-
-    if not result_niches:
-        await message.answer("🔍 По смыслу запроса ничего не найдено. Попробуй уточнить.")
+        await message.answer("🔍 Ничего не найдено. Попробуй другой запрос или смягчи условия.")
         return
 
     _user_state[user_id] = {"niches": result_niches, "offset": 0}
