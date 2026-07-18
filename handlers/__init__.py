@@ -289,8 +289,9 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
         else:
             text_parts.append("⚠️ Аналитика временно недоступна")
 
-        # Ссылка на WB
-        text_parts.append(f"🔗 [Поиск на WB](https://www.wildberries.ru/catalog/0/search.aspx?query={quote(name)})")
+        # Ссылка на WB по первой фразе (не по категории — категории не ищутся)
+        first_phrase = top_phrases[0]["query"] if top_phrases else name
+        text_parts.append(f"🔗 [Поиск на WB](https://www.wildberries.ru/catalog/0/search.aspx?query={quote(first_phrase)})")
         text_parts.append("")
 
     text = "\n".join(text_parts)
