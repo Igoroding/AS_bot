@@ -62,18 +62,20 @@ def _query_sqlite(params: dict) -> list[Niche]:
         where_parts.append("request_count >= ?")
         args.append(int(params["min_requests"]))
 
-    # search_text — LIKE по category ИЛИ phrase
+    # search_text — LIKE по category ИЛИ phrase (по корню слова, первые 5 букв)
     search_text = params.get("search_text", "")
     if search_text and search_text.strip():
         words = [w.strip() for w in search_text.lower().split() if len(w.strip()) > 2]
         if words:
+            # Берём корень слова (первые 5 букв) для поиска по падежам
             like_clauses = " OR ".join(
                 f"(LOWER(category) LIKE ? OR LOWER(phrase) LIKE ?)"
                 for _ in words
             )
             where_parts.append(f"({like_clauses})")
             for w in words:
-                args.extend([f"%{w}%", f"%{w}%"])
+                root = w[:5]  # первые 5 букв — корень для русского языка
+                args.extend([f"%{root}%", f"%{root}%"])
 
     sort_by = params.get("sort_by", "requests")
     sort_map = {"requests": "request_count", "competition": "competition", "products": "cards_count"}
