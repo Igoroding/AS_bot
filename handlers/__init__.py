@@ -308,27 +308,64 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
         else:
             trend_emoji = "❄️"
 
-        text_parts.append(f"## {i}. {name}")
-        text_parts.append(f"📊 **{total_requests:,}** запросов/мес · **{phrase_count}** фраз · 🎯 конкуренция **{avg_competition:.1f}%**")
-        text_parts.append(f"{trend_emoji} Тренд: **{trend_pct:+.1f}%** к прошлому месяцу")
-
-        # Топ-5 фраз с низкой конкуренцией
-        if top_phrases:
-            text_parts.append("🔑 *Лучшие фразы:*")
-            for p in top_phrases:
-                text_parts.append(f"  · {p['query']} — {p['requests']:,} запросов, конкуренция {p['competition']:.1f}%")
-
-        # Аналитика категории
-        text_parts.append("")
-        analysis = await analyze_product(name, top_phrases[:5])
-        if analysis:
-            text_parts.append(analysis)
+        # Оценка привлекательности
+        if avg_competition <= 5 and trend_pct > 5:
+            badge = "🏆"
+        elif avg_competition <= 5:
+            badge = "💎"
+        elif trend_pct > 20:
+            badge = "🔥"
         else:
-            text_parts.append("⚠️ Аналитика временно недоступна")
+            badge = ""
 
-        # Ссылка на WB по первой фразе (не по категории — категории не ищутся)
+        text_parts.append(f"## {badge} {i}. {name}")
+        # Строка метрик: спрос · конкуренция · тренд
+        text_parts.append(f"📊 **{total_requests:,}** запросов · 🎯 конк **{avg_competition:.1f}%** · {trend_emoji} **{trend_pct:+.1f}%**")
+        # Количество фраз
+        text_parts.append(f"📎 {phrase_count} ключевых фраз")
+
+        # Топ-3 фразы (только название и конкуренция)
+        if top_phrases:
+            for p in top_phrases[:3]:
+                trend_p = p.get("trend_pct", 0)
+                text_parts.append(f"  · {p['query']} — {p['requests']:,} запр, конк {p['competition']:.1f}%")
+
+        # Аналитика — компактно, одной строкой
+        text_parts.append("")
+        analysis = await analyze_product(name, top_phrases[:3])
+        if analysis:
+            # Сжимаем аналитику: берём только ключевые пункты
+            lines = [l.strip() for l in analysis.split("\n") if l.strip()]
+            key_points = []
+            for line in lines:
+                if "Честный знак" in line:
+                    val = "✅" if "не" in line.lower() or "нет" in line.lower() else "⚠️"
+                    key_points.append(f"🏷 ЧЗ {val}")
+                elif "Сертификат" in line:
+                    val = "✅" if "не" in line.lower() or "нет" in line.lower() else "⚠️"
+                    key_points.append(f"📜 Сертиф {val}")
+                elif "Размер" in line or "вес" in line.lower():
+                    if "маленьк" in line.lower() or "лёгк" in line.lower():
+                        key_points.append("📦 Лёгкий товар")
+                    elif "крупн" in line.lower() or "тяжёл" in line.lower():
+                        key_points.append("📦 Крупный/тяжёлый")
+                    else:
+                        key_points.append("📦 Средний")
+                elif "Бренд" in line:
+                    if "нет" in line.lower() or "отсутств" in line.lower():
+                        key_points.append("™ Без брендов")
+                    else:
+                        key_points.append("™ Есть бренды")
+            if key_points:
+                text_parts.append(" · ".join(key_points))
+            else:
+                text_parts.append(analysis.split("\n")[0][:80])
+        else:
+            text_parts.append("⚠️ Аналитика недоступна")
+
+        # Ссылка на WB
         first_phrase = top_phrases[0]["query"] if top_phrases else name
-        text_parts.append(f"🔗 [Поиск на WB](https://www.wildberries.ru/catalog/0/search.aspx?query={quote(first_phrase)})")
+        text_parts.append(f"🔗 [Искать на WB](https://www.wildberries.ru/catalog/0/search.aspx?query={quote(first_phrase)})")
         text_parts.append("")
 
     text = "\n".join(text_parts)
