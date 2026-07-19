@@ -296,67 +296,68 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
         top_phrases = cat["top_phrases"]
         trend_pct = cat.get("trend_pct", 0)
 
-        # Текстовая метка тренда
-        if trend_pct > 20:
-            trend_label = "📈 рост"
-        elif trend_pct > 5:
-            trend_label = "📈 рост"
+        # Ранг
+        rank = offset + i
+        if rank == 0:
+            rank_emoji = "🥇"
+        elif rank == 1:
+            rank_emoji = "🥈"
+        elif rank == 2:
+            rank_emoji = "🥉"
+        else:
+            rank_emoji = ""
+
+        # Эмодзи динамики
+        if trend_pct > 5:
+            trend_emoji = "📈"
         elif trend_pct > -5:
-            trend_label = "➡️ стабильно"
-        elif trend_pct > -20:
-            trend_label = "📉 падение"
+            trend_emoji = "➡️"
         else:
-            trend_label = "📉 падение"
+            trend_emoji = "📉"
 
-        # Бейдж привлекательности (только для топ-категорий)
-        if avg_competition <= 5 and trend_pct > 5:
-            badge = "🏆 "
-        elif avg_competition <= 3:
-            badge = "💎 "
-        else:
-            badge = ""
+        text_parts.append(f"## {rank_emoji} {i}. {name}")
+        # Строка метрик
+        text_parts.append(f"Спрос: **{total_requests:,}**/мес · Конкуренция: **{avg_competition:.1f}%** · {trend_emoji} **{trend_pct:+.1f}%**")
+        text_parts.append("")
 
-        text_parts.append(f"## {badge}{i}. {name}")
-        # Одна строка метрик с текстовыми подписями
-        text_parts.append(f"📊 Спрос: **{total_requests:,}**/мес · 🎯 Конкуренция: **{avg_competition:.1f}%** · {trend_label}: **{trend_pct:+.1f}%**")
-        text_parts.append(f"📎 Ключевых фраз: **{phrase_count}**")
-
-        # Топ-3 фразы
-        if top_phrases:
-            for p in top_phrases[:3]:
-                text_parts.append(f"  · {p['query']} — {p['requests']:,} запр, конк {p['competition']:.1f}%")
-
-        # Аналитика — компактно
+        # Мета-атрибуты (сразу после метрик, до фраз)
         text_parts.append("")
         analysis = await analyze_product(name, top_phrases[:3])
         if analysis:
             lines = [l.strip() for l in analysis.split("\n") if l.strip()]
-            key_points = []
+            meta_parts = []
             for line in lines:
                 if "Честный знак" in line:
                     val = "не нужен" if "не" in line.lower() or "нет" in line.lower() else "нужен"
-                    key_points.append(f"Честный знак: {val}")
+                    meta_parts.append(f"Честный знак: {val}")
                 elif "Сертификат" in line:
                     val = "не нужны" if "не" in line.lower() or "нет" in line.lower() else "нужны"
-                    key_points.append(f"Сертификаты: {val}")
+                    meta_parts.append(f"Сертификаты: {val}")
                 elif "Размер" in line or "вес" in line.lower():
                     if "маленьк" in line.lower() or "лёгк" in line.lower():
-                        key_points.append("Размер: лёгкий")
+                        meta_parts.append("Вход: лёгкий")
                     elif "крупн" in line.lower() or "тяжёл" in line.lower():
-                        key_points.append("Размер: крупный/тяжёлый")
+                        meta_parts.append("Вход: крупный/тяжёлый")
                     else:
-                        key_points.append("Размер: средний")
+                        meta_parts.append("Вход: средний")
                 elif "Бренд" in line:
                     if "нет" in line.lower() or "отсутств" in line.lower():
-                        key_points.append("Бренды: нет")
+                        meta_parts.append("Бренды: нет")
                     else:
-                        key_points.append("Бренды: есть")
-            if key_points:
-                text_parts.append(" · ".join(key_points))
+                        meta_parts.append("Бренды: есть")
+            if meta_parts:
+                text_parts.append(" · ".join(meta_parts))
             else:
                 text_parts.append(analysis.split("\n")[0][:80])
         else:
             text_parts.append("Аналитика недоступна")
+
+        # Ключевые фразы
+        text_parts.append("")
+        if top_phrases:
+            text_parts.append(f"Ключевые фразы ({min(len(top_phrases), 3)} из {phrase_count}):")
+            for p in top_phrases[:3]:
+                text_parts.append(f"  • {p['query']} — {p['requests']:,} запр, конк {p['competition']:.1f}%")
 
         # Ссылка на WB
         first_phrase = top_phrases[0]["query"] if top_phrases else name
