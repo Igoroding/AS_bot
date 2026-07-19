@@ -317,7 +317,7 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
 
         text_parts.append(f"## {rank_emoji} {i}. {name}")
         # Строка метрик
-        text_parts.append(f"Спрос: **{total_requests:,}**/мес · Конкуренция: **{avg_competition:.1f}%** · {trend_emoji} **{trend_pct:+.1f}%**")
+        text_parts.append(f"Спрос: **{total_requests:,}**/мес · 📈 Динамика: **{trend_pct:+.1f}%** · Конкуренция: **{avg_competition:.1f}%**")
         text_parts.append("")
 
         # Мета-атрибуты (сразу после метрик, до фраз)
@@ -325,29 +325,35 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
         analysis = await analyze_product(name, top_phrases[:3])
         if analysis:
             lines = [l.strip() for l in analysis.split("\n") if l.strip()]
-            meta_parts = []
+            size_part = ""
+            req_parts = []
+            brand_part = ""
             for line in lines:
                 if "Честный знак" in line:
                     val = "не нужен" if "не" in line.lower() or "нет" in line.lower() else "нужен"
-                    meta_parts.append(f"Честный знак: {val}")
+                    req_parts.append(f"Честный знак: {val}")
                 elif "Сертификат" in line:
                     val = "не нужны" if "не" in line.lower() or "нет" in line.lower() else "нужны"
-                    meta_parts.append(f"Сертификаты: {val}")
+                    req_parts.append(f"Сертификаты: {val}")
                 elif "Размер" in line or "вес" in line.lower():
                     if "маленьк" in line.lower() or "лёгк" in line.lower():
-                        meta_parts.append("Вход: лёгкий")
+                        size_part = "Вход: лёгкий"
                     elif "крупн" in line.lower() or "тяжёл" in line.lower():
-                        meta_parts.append("Вход: крупный/тяжёлый")
+                        size_part = "Вход: крупный/тяжёлый"
                     else:
-                        meta_parts.append("Вход: средний")
+                        size_part = "Вход: средний"
                 elif "Бренд" in line:
                     if "нет" in line.lower() or "отсутств" in line.lower():
-                        meta_parts.append("Бренды: нет")
+                        brand_part = "Бренды: нет"
                     else:
-                        meta_parts.append("Бренды: есть")
-            if meta_parts:
-                text_parts.append(" · ".join(meta_parts))
-            else:
+                        brand_part = "Бренды: есть"
+            if size_part:
+                text_parts.append(size_part)
+            if req_parts:
+                text_parts.append(" · ".join(req_parts))
+            if brand_part:
+                text_parts.append(brand_part)
+            if not size_part and not req_parts and not brand_part:
                 text_parts.append(analysis.split("\n")[0][:80])
         else:
             text_parts.append("Аналитика недоступна")
@@ -357,7 +363,7 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
         if top_phrases:
             text_parts.append(f"Ключевые фразы ({min(len(top_phrases), 3)} из {phrase_count}):")
             for p in top_phrases[:3]:
-                text_parts.append(f"  • {p['query']} — {p['requests']:,} запр, конк {p['competition']:.1f}%")
+                text_parts.append(f"  • {p['query']} — {p['requests']:,} запросов/мес, конкуренция {p['competition']:.1f}%")
 
         # Ссылка на WB
         first_phrase = top_phrases[0]["query"] if top_phrases else name
