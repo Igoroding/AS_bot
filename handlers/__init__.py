@@ -104,7 +104,7 @@ def _query_sqlite(params: dict) -> list[Niche]:
     sort_col = sort_map.get(sort_by, "request_count")
 
     where = " AND ".join(where_parts)
-    sql = f"SELECT phrase, request_count, cards_count, competition FROM niches WHERE {where} ORDER BY {sort_col} DESC LIMIT 200"
+    sql = f"SELECT phrase, request_count, request_count_prev, cards_count, competition FROM niches WHERE {where} ORDER BY {sort_col} DESC LIMIT 200"
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -117,6 +117,7 @@ def _query_sqlite(params: dict) -> list[Niche]:
             requests=row["request_count"],
             products=row["cards_count"],
             competition=row["competition"],
+            requests_prev=row["request_count_prev"] or 0,
         ))
     conn.close()
     return result
@@ -293,9 +294,23 @@ async def _send_products(message: Message, niches: list[Niche], offset: int, use
         phrase_count = cat["phrase_count"]
         avg_competition = cat["avg_competition"]
         top_phrases = cat["top_phrases"]
+        trend_pct = cat.get("trend_pct", 0)
+
+        # Эмодзи тренда
+        if trend_pct > 20:
+            trend_emoji = "🔥"
+        elif trend_pct > 5:
+            trend_emoji = "📈"
+        elif trend_pct > -5:
+            trend_emoji = "➡️"
+        elif trend_pct > -20:
+            trend_emoji = "📉"
+        else:
+            trend_emoji = "❄️"
 
         text_parts.append(f"## {i}. {name}")
         text_parts.append(f"📊 **{total_requests:,}** запросов/мес · **{phrase_count}** фраз · 🎯 конкуренция **{avg_competition:.1f}%**")
+        text_parts.append(f"{trend_emoji} Тренд: **{trend_pct:+.1f}%** к прошлому месяцу")
 
         # Топ-5 фраз с низкой конкуренцией
         if top_phrases:
@@ -350,6 +365,7 @@ def _get_category_groups(niches: list[Niche]) -> list[dict]:
     sql = f"""
         SELECT category,
                SUM(request_count) as total_requests,
+               SUM(request_count_prev) as total_requests_prev,
                COUNT(*) as phrase_count,
                AVG(competition) as avg_competition
         FROM niches
@@ -369,21 +385,27 @@ def _get_category_groups(niches: list[Niche]) -> list[dict]:
     result = []
     for row in rows:
         category = row["category"]
+        total_prev = row["total_requests_prev"] or 0
+        total_now = row["total_requests"]
+        trend_pct = round((total_now - total_prev) * 100.0 / total_prev, 1) if total_prev > 0 else 0
+
         # Получаем топ-5 фраз для этой категории
         c.execute(
-            "SELECT phrase, request_count, cards_count, competition "
+            "SELECT phrase, request_count, request_count_prev, cards_count, competition "
             "FROM niches WHERE category = ? AND competition <= 15 AND request_count >= 500 AND cards_count > 0 "
             "ORDER BY request_count DESC LIMIT 5",
             (category,),
         )
         top_phrases = [
-            {"query": r["phrase"], "requests": r["request_count"], "products": r["cards_count"], "competition": r["competition"]}
+            {"query": r["phrase"], "requests": r["request_count"], "requests_prev": r["request_count_prev"] or 0, "products": r["cards_count"], "competition": r["competition"]}
             for r in c.fetchall()
         ]
 
         result.append({
             "category": category,
-            "total_requests": row["total_requests"],
+            "total_requests": total_now,
+            "total_requests_prev": total_prev,
+            "trend_pct": trend_pct,
             "phrase_count": row["phrase_count"],
             "avg_competition": row["avg_competition"],
             "top_phrases": top_phrases,

@@ -13,6 +13,7 @@ class Niche:
     requests: int
     products: int
     competition: float
+    requests_prev: int = 0
 
 
 def _get_db_path() -> str:
